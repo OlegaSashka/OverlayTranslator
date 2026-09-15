@@ -5,7 +5,6 @@ from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
 from src.canvas import OverlayCanvas
 
 def create_tray_icon():
-    # Создаем простую пиксельную иконку для трея «T»
     pixmap = QPixmap(32, 32)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
@@ -19,34 +18,34 @@ def create_tray_icon():
 
 def main():
     app = QApplication(sys.argv)
-    # Окно не должно закрываться при скрытии диалогов
     app.setQuitOnLastWindowClosed(False)
 
     canvas = OverlayCanvas()
     canvas.fit_screen()
     canvas.show()
 
-    # Настройка системного лотка (возле часов)
     tray = QSystemTrayIcon(create_tray_icon(), app)
     tray.setToolTip("Steam Deck Overlay Translator")
 
     menu = QMenu()
 
-    # Тумблер режима настройки
-    action_edit = QAction("Режим настройки (двигать рамки)", menu, checkable=True)
+    # Единственный тумблер: включение/выключение режима настройки
+    action_edit = QAction("Режим настройки (показать рамки)", menu, checkable=True)
     action_edit.setChecked(True)
     action_edit.toggled.connect(canvas.set_edit_mode)
     menu.addAction(action_edit)
 
-    # Тумблер показа перевода
-    action_trans = QAction("Показывать перевод", menu, checkable=True)
-    action_trans.setChecked(True)
-    action_trans.toggled.connect(canvas.toggle_translation)
-    menu.addAction(action_trans)
+    # Синхронизация галочки в трее, если нажали «Готово» прямо на экране
+    def on_mode_changed(enabled):
+        if action_edit.isChecked() != enabled:
+            action_edit.blockSignals(True)
+            action_edit.setChecked(enabled)
+            action_edit.blockSignals(False)
+
+    canvas.mode_changed.connect(on_mode_changed)
 
     menu.addSeparator()
 
-    # Выход
     action_quit = QAction("Выход", menu)
     action_quit.triggered.connect(app.quit)
     menu.addAction(action_quit)
