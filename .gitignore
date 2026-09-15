@@ -1,0 +1,17 @@
+.venv/
+venv/
+env/
+
+__pycache__/
+
+*.py[cod]
+*$py.class
+
+*.pyc
+.vscode/
+.idea/
+
+*.swp
+.DS_Store
+
+config.json
