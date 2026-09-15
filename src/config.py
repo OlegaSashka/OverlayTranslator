@@ -7,12 +7,13 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 DEFAULT_CONFIG = {
     "capture_rect": {"x": 240, "y": 550, "w": 800, "h": 120},
     "overlay_rect": {"x": 240, "y": 380, "w": 800, "h": 140},
-    "settings_rect": {"x": 980, "y": 40, "w": 260, "h": 210},
     "show_overlay": True,
+    "show_capture_border": False,  # Показывать ли контур захвата во время игры
     "styles": {
         "overlay_bg_color": "#0F1219",
-        "overlay_opacity": 85,  # Значение в процентах: 0 - 100
-        "border_color": "#00FF88"
+        "overlay_opacity": 85,
+        "border_color": "#00FF88",
+        "font_size": 15
     },
     "source_lang": "eng",
     "target_lang": "ru",
@@ -26,7 +27,6 @@ def load_config() -> dict:
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # Дополняем отсутствующие поля дефолтными значениями
             for k, v in DEFAULT_CONFIG.items():
                 if k not in data:
                     data[k] = v

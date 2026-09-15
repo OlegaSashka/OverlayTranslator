@@ -1,41 +1,128 @@
+import ctypes
+from ctypes import c_void_p, c_ulong, c_int, byref, POINTER
 from PyQt5.QtCore import Qt, QPoint, QRect
 from PyQt5.QtGui import QPainter, QColor, QPen, QFont
-from PyQt5.QtWidgets import QWidget, QApplication
+from PyQt5.QtWidgets import QWidget
 from src.config import load_config, save_config
 
-MARGIN = 8  # Ширина зоны у краёв для ресайза
+MARGIN = 12
+
+x11 = ctypes.cdll.LoadLibrary("libX11.so.6")
+xfixes = ctypes.cdll.LoadLibrary("libXfixes.so.3")
+
+x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+x11.XOpenDisplay.restype = c_void_p
+x11.XCloseDisplay.argtypes = [c_void_p]
+x11.XCloseDisplay.restype = c_int
+x11.XFlush.argtypes = [c_void_p]
+x11.XFlush.restype = c_int
+
+xfixes.XFixesQueryExtension.argtypes = [c_void_p, POINTER(c_int), POINTER(c_int)]
+xfixes.XFixesQueryExtension.restype = c_int
+xfixes.XFixesCreateRegion.argtypes = [c_void_p, c_void_p, c_int]
+xfixes.XFixesCreateRegion.restype = c_ulong
+xfixes.XFixesSetWindowShapeRegion.argtypes = [c_void_p, c_ulong, c_int, c_int, c_int, c_ulong]
+xfixes.XFixesSetWindowShapeRegion.restype = None
+xfixes.XFixesDestroyRegion.argtypes = [c_void_p, c_ulong]
+xfixes.XFixesDestroyRegion.restype = None
+
+SHAPE_INPUT = 2
+
+
+def set_window_clickthrough(win_id: int, enable: bool):
+    display = x11.XOpenDisplay(None)
+    if not display:
+        return
+
+    event_base = c_int()
+    error_base = c_int()
+    if not xfixes.XFixesQueryExtension(display, byref(event_base), byref(error_base)):
+        x11.XCloseDisplay(display)
+        return
+
+    if enable:
+        empty_region = xfixes.XFixesCreateRegion(display, None, 0)
+        xfixes.XFixesSetWindowShapeRegion(display, c_ulong(win_id), SHAPE_INPUT, 0, 0, empty_region)
+        xfixes.XFixesDestroyRegion(display, empty_region)
+    else:
+        xfixes.XFixesSetWindowShapeRegion(display, c_ulong(win_id), SHAPE_INPUT, 0, 0, 0)
+
+    x11.XFlush(display)
+    x11.XCloseDisplay(display)
+
+
+def draw_hud_corners(painter: QPainter, rect: QRect, color: QColor):
+    arm = 10
+    pen = QPen(color, 2)
+    painter.setPen(pen)
+
+    painter.drawLine(rect.left(), rect.top(), rect.left() + arm, rect.top())
+    painter.drawLine(rect.left(), rect.top(), rect.left(), rect.top() + arm)
+    painter.drawLine(rect.right(), rect.top(), rect.right() - arm, rect.top())
+    painter.drawLine(rect.right(), rect.top(), rect.right(), rect.top() + arm)
+    painter.drawLine(rect.left(), rect.bottom(), rect.left() + arm, rect.bottom())
+    painter.drawLine(rect.left(), rect.bottom(), rect.left(), rect.bottom() - arm)
+    painter.drawLine(rect.right(), rect.bottom(), rect.right() - arm, rect.bottom())
+    painter.drawLine(rect.right(), rect.bottom(), rect.right(), rect.bottom() - arm)
 
 
 class ResizableWindow(QWidget):
-    def __init__(self, config_key: str, min_w=150, min_h=50):
+    def __init__(self, config_key: str, min_w=160, min_h=50):
         super().__init__()
         self.config_key = config_key
-        self.setMinimumSize(min_w, min_h)
+        self.min_w = min_w
+        self.min_h = min_h
+        self._allow_close = False
 
-        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(
+            Qt.FramelessWindowHint |
+            Qt.WindowStaysOnTopHint |
+            Qt.BypassWindowManagerHint
+        )
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setMouseTracking(True)
-        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFocusPolicy(Qt.NoFocus)
 
-        self.edit_mode = True
+        self.edit_mode = False
+        self.resize_edge = 0
+        self.drag_start_pos = QPoint()
+        self.drag_start_geo = QRect()
+
         self.restore_geometry()
+
+    def closeEvent(self, event):
+        if self._allow_close:
+            event.accept()
+        else:
+            event.ignore()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.apply_clickthrough_state()
+
+    def set_edit_mode(self, enabled: bool):
+        self.edit_mode = enabled
+        self.apply_clickthrough_state()
+        if not enabled:
+            self.setCursor(Qt.ArrowCursor)
+            self.save_current_geometry()
+        self.update()
+
+    def apply_clickthrough_state(self):
+        wid = int(self.winId())
+        if wid > 2:
+            set_window_clickthrough(wid, not self.edit_mode)
 
     def restore_geometry(self):
         cfg = load_config()
         geo = cfg.get(self.config_key, {})
-
-        default_x = 240
         default_y = 550 if self.config_key == "capture_rect" else 380
-        default_w = 800
-        default_h = 120 if self.config_key == "capture_rect" else 140
-
-        x = geo.get("x", geo.get("left", default_x))
-        y = geo.get("y", geo.get("top", default_y))
-        w = geo.get("w", geo.get("width", default_w))
-        h = geo.get("h", geo.get("height", default_h))
-
+        x = geo.get("x", 240)
+        y = geo.get("y", default_y)
+        w = geo.get("w", 800)
+        h = geo.get("h", 120 if self.config_key == "capture_rect" else 140)
         self.setGeometry(x, y, w, h)
-        self.clamp_to_screen()
 
     def save_current_geometry(self):
         cfg = load_config()
@@ -46,93 +133,73 @@ class ResizableWindow(QWidget):
         }
         save_config(cfg)
 
-    def clamp_to_screen(self):
-        screen = QApplication.primaryScreen().geometry()
-        nx = max(0, min(self.x(), screen.width() - self.width()))
-        ny = max(0, min(self.y(), screen.height() - self.height()))
-        if nx != self.x() or ny != self.y():
-            self.move(nx, ny)
+    def get_edge(self, pos: QPoint) -> int:
+        edge = 0
+        if pos.x() <= MARGIN: edge |= 1
+        elif pos.x() >= self.width() - MARGIN: edge |= 2
+        if pos.y() <= MARGIN: edge |= 4
+        elif pos.y() >= self.height() - MARGIN: edge |= 8
+        return edge
 
-    def get_edge(self, pos: QPoint) -> Qt.Edges:
-        edges = Qt.Edges()
-        if pos.x() <= MARGIN:
-            edges |= Qt.LeftEdge
-        elif pos.x() >= self.width() - MARGIN:
-            edges |= Qt.RightEdge
-        if pos.y() <= MARGIN:
-            edges |= Qt.TopEdge
-        elif pos.y() >= self.height() - MARGIN:
-            edges |= Qt.BottomEdge
-        return edges
-
-    def update_cursor_shape(self, edges: Qt.Edges):
+    def update_cursor_shape(self, edge: int):
         if not self.edit_mode:
-            self.setCursor(Qt.ArrowCursor)
             return
-
-        if (edges & (Qt.TopEdge | Qt.LeftEdge)) or (edges & (Qt.BottomEdge | Qt.RightEdge)):
-            self.setCursor(Qt.SizeFDiagCursor)
-        elif (edges & (Qt.TopEdge | Qt.RightEdge)) or (edges & (Qt.BottomEdge | Qt.LeftEdge)):
-            self.setCursor(Qt.SizeBDiagCursor)
-        elif edges & (Qt.LeftEdge | Qt.RightEdge):
-            self.setCursor(Qt.SizeHorCursor)
-        elif edges & (Qt.TopEdge | Qt.BottomEdge):
-            self.setCursor(Qt.SizeVerCursor)
-        else:
-            self.setCursor(Qt.OpenHandCursor)
+        if edge in (1 | 4, 2 | 8): self.setCursor(Qt.SizeFDiagCursor)
+        elif edge in (2 | 4, 1 | 8): self.setCursor(Qt.SizeBDiagCursor)
+        elif edge in (1, 2): self.setCursor(Qt.SizeHorCursor)
+        elif edge in (4, 8): self.setCursor(Qt.SizeVerCursor)
+        else: self.setCursor(Qt.OpenHandCursor)
 
     def mousePressEvent(self, event):
         if not self.edit_mode or event.button() != Qt.LeftButton:
             return
-
-        edges = self.get_edge(event.pos())
-        if edges:
-            self.windowHandle().startSystemResize(edges)
-        else:
-            self.windowHandle().startSystemMove()
+        self.drag_start_pos = event.globalPos()
+        self.drag_start_geo = self.geometry()
+        self.resize_edge = self.get_edge(event.pos())
+        if self.resize_edge == 0:
+            self.setCursor(Qt.ClosedHandCursor)
         event.accept()
 
     def mouseMoveEvent(self, event):
-        if self.edit_mode:
-            self.update_cursor_shape(self.get_edge(event.pos()))
-
-    def moveEvent(self, event):
-        super().moveEvent(event)
-        if self.edit_mode:
-            self.save_current_geometry()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self.edit_mode:
-            self.save_current_geometry()
-
-    def keyPressEvent(self, event):
         if not self.edit_mode:
             return
 
-        step = 10 if (event.modifiers() & Qt.ShiftModifier) else 1
-        x, y = self.x(), self.y()
-
-        if event.key() == Qt.Key_Left:    x -= step
-        elif event.key() == Qt.Key_Right: x += step
-        elif event.key() == Qt.Key_Up:    y -= step
-        elif event.key() == Qt.Key_Down:  y += step
+        if event.buttons() & Qt.LeftButton:
+            delta = event.globalPos() - self.drag_start_pos
+            if self.resize_edge == 0:
+                self.move(self.drag_start_geo.topLeft() + delta)
+            else:
+                rect = QRect(self.drag_start_geo)
+                if self.resize_edge & 1:
+                    nl = rect.left() + delta.x()
+                    if rect.right() - nl >= self.min_w: rect.setLeft(nl)
+                if self.resize_edge & 2:
+                    nr = rect.right() + delta.x()
+                    if nr - rect.left() >= self.min_w: rect.setRight(nr)
+                if self.resize_edge & 4:
+                    nt = rect.top() + delta.y()
+                    if rect.bottom() - nt >= self.min_h: rect.setTop(nt)
+                if self.resize_edge & 8:
+                    nb = rect.bottom() + delta.y()
+                    if nb - rect.top() >= self.min_h: rect.setBottom(nb)
+                self.setGeometry(rect)
+            event.accept()
         else:
-            super().keyPressEvent(event)
-            return
+            self.update_cursor_shape(self.get_edge(event.pos()))
 
-        screen = QApplication.primaryScreen().geometry()
-        clamped_x = max(0, min(x, screen.width() - self.width()))
-        clamped_y = max(0, min(y, screen.height() - self.height()))
+    def mouseReleaseEvent(self, event):
+        if self.edit_mode and event.button() == Qt.LeftButton:
+            self.resize_edge = 0
+            self.update_cursor_shape(self.get_edge(event.pos()))
+            self.save_current_geometry()
+            event.accept()
 
-        self.move(clamped_x, clamped_y)
-        event.accept()
 
 class CaptureFrame(ResizableWindow):
-    """Зеленая рамка захвата OCR"""
     def __init__(self):
         super().__init__("capture_rect", min_w=120, min_h=40)
         self.border_color = QColor("#00FF88")
+        self.reload_style()
 
     def reload_style(self):
         cfg = load_config()
@@ -142,36 +209,31 @@ class CaptureFrame(ResizableWindow):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-
         draw_rect = self.rect().adjusted(1, 1, -1, -1)
 
-        fill_color = QColor(self.border_color)
-        fill_color.setAlpha(25)
-
-        painter.setPen(QPen(self.border_color, 1.5, Qt.DashLine))
-        painter.setBrush(fill_color)
-        painter.drawRoundedRect(draw_rect, 6, 6)
-
-        painter.setPen(self.border_color)
-        painter.setFont(QFont("sans-serif", 10, QFont.Bold))
-        painter.drawText(self.rect(), Qt.AlignCenter, "[ Зона захвата текста ]")
+        if self.edit_mode:
+            fill = QColor(self.border_color)
+            fill.setAlpha(15)
+            painter.setBrush(fill)
+            painter.setPen(QPen(self.border_color, 1.2, Qt.DashLine))
+            painter.drawRoundedRect(draw_rect, 4, 4)
+            draw_hud_corners(painter, draw_rect, self.border_color)
+        else:
+            cfg = load_config()
+            if cfg.get("show_capture_border", False):
+                faint = QColor(self.border_color)
+                faint.setAlpha(40)
+                painter.setPen(QPen(faint, 1, Qt.DotLine))
+                painter.drawRoundedRect(draw_rect, 4, 4)
 
 
 class TranslationFrame(ResizableWindow):
-    """Плавающая карточка перевода"""
     def __init__(self):
         super().__init__("overlay_rect", min_w=180, min_h=50)
         self.current_text = "Ожидание текста..."
         self.bg_color = QColor(15, 18, 25, 215)
+        self.font_size = 15
         self.reload_style()
-
-    def set_edit_mode(self, enabled: bool):
-        self.edit_mode = enabled
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, not enabled)
-        if not enabled:
-            self.setCursor(Qt.ArrowCursor)
-            self.save_current_geometry()
-        self.update()
 
     def reload_style(self):
         cfg = load_config()
@@ -179,6 +241,7 @@ class TranslationFrame(ResizableWindow):
         alpha = int(255 * (styles.get("overlay_opacity", 85) / 100))
         self.bg_color = QColor(styles.get("overlay_bg_color", "#0F1219"))
         self.bg_color.setAlpha(alpha)
+        self.font_size = styles.get("font_size", 15)
         self.update()
 
     def set_translation(self, text: str):
@@ -188,15 +251,20 @@ class TranslationFrame(ResizableWindow):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-
         draw_rect = self.rect().adjusted(1, 1, -1, -1)
 
-        border_pen = QPen(QColor(255, 255, 255, 75 if self.edit_mode else 30), 1)
-        painter.setPen(border_pen)
         painter.setBrush(self.bg_color)
-        painter.drawRoundedRect(draw_rect, 8, 8)
+        border_pen = QPen(
+            QColor(0, 255, 136, 160) if self.edit_mode else QColor(255, 255, 255, 30),
+            1
+        )
+        painter.setPen(border_pen)
+        painter.drawRoundedRect(draw_rect, 6, 6)
 
-        painter.setPen(QColor(255, 255, 255))
-        painter.setFont(QFont("sans-serif", 14, QFont.Bold))
-        text_area = self.rect().adjusted(MARGIN, 6, -MARGIN, -6)
-        painter.drawText(text_area, Qt.AlignCenter | Qt.TextWordWrap, self.current_text)
+        if self.edit_mode:
+            draw_hud_corners(painter, draw_rect, QColor(0, 255, 136))
+
+        painter.setPen(QColor(240, 246, 252))
+        painter.setFont(QFont("sans-serif", self.font_size, QFont.Normal))
+        text_box = self.rect().adjusted(MARGIN, 6, -MARGIN, -6)
+        painter.drawText(text_box, Qt.AlignCenter | Qt.TextWordWrap, self.current_text)
