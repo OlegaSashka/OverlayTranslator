@@ -51,11 +51,9 @@ def set_window_clickthrough(win_id: int, enable: bool):
     x11.XCloseDisplay(display)
 
 
-def draw_hud_corners(painter: QPainter, rect: QRect, color: QColor):
-    arm = 10
-    pen = QPen(color, 2)
+def draw_hud_corners(painter: QPainter, rect: QRect, color: QColor, arm: int = 10, width: float = 2.0):
+    pen = QPen(color, width)
     painter.setPen(pen)
-
     painter.drawLine(rect.left(), rect.top(), rect.left() + arm, rect.top())
     painter.drawLine(rect.left(), rect.top(), rect.left(), rect.top() + arm)
     painter.drawLine(rect.right(), rect.top(), rect.right() - arm, rect.top())
@@ -213,18 +211,20 @@ class CaptureFrame(ResizableWindow):
 
         if self.edit_mode:
             fill = QColor(self.border_color)
-            fill.setAlpha(15)
+            fill.setAlpha(20)
             painter.setBrush(fill)
-            painter.setPen(QPen(self.border_color, 1.2, Qt.DashLine))
-            painter.drawRoundedRect(draw_rect, 4, 4)
-            draw_hud_corners(painter, draw_rect, self.border_color)
+            painter.setPen(QPen(self.border_color, 1.5, Qt.DashLine))
+            painter.drawRoundedRect(draw_rect, 6, 6)
+            draw_hud_corners(painter, draw_rect, self.border_color, arm=12, width=2.5)
         else:
             cfg = load_config()
             if cfg.get("show_capture_border", False):
                 faint = QColor(self.border_color)
-                faint.setAlpha(40)
-                painter.setPen(QPen(faint, 1, Qt.DotLine))
-                painter.drawRoundedRect(draw_rect, 4, 4)
+                faint.setAlpha(110)
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(faint, 1, Qt.DashDotLine))
+                painter.drawRoundedRect(draw_rect, 6, 6)
+                draw_hud_corners(painter, draw_rect, faint, arm=8, width=1.5)
 
 
 class TranslationFrame(ResizableWindow):
@@ -232,15 +232,19 @@ class TranslationFrame(ResizableWindow):
         super().__init__("overlay_rect", min_w=180, min_h=50)
         self.current_text = "Ожидание текста..."
         self.bg_color = QColor(15, 18, 25, 215)
+        self.text_color = QColor("#F0F6FC")
         self.font_size = 15
+        self.opacity_pct = 85
         self.reload_style()
 
     def reload_style(self):
         cfg = load_config()
         styles = cfg.get("styles", {})
-        alpha = int(255 * (styles.get("overlay_opacity", 85) / 100))
+        self.opacity_pct = styles.get("overlay_opacity", 85)
+        alpha = int(255 * (self.opacity_pct / 100))
         self.bg_color = QColor(styles.get("overlay_bg_color", "#0F1219"))
         self.bg_color.setAlpha(alpha)
+        self.text_color = QColor(styles.get("text_color", "#F0F6FC"))
         self.font_size = styles.get("font_size", 15)
         self.update()
 
@@ -253,18 +257,32 @@ class TranslationFrame(ResizableWindow):
         painter.setRenderHint(QPainter.Antialiasing)
         draw_rect = self.rect().adjusted(1, 1, -1, -1)
 
-        painter.setBrush(self.bg_color)
-        border_pen = QPen(
-            QColor(0, 255, 136, 160) if self.edit_mode else QColor(255, 255, 255, 30),
-            1
-        )
-        painter.setPen(border_pen)
-        painter.drawRoundedRect(draw_rect, 6, 6)
-
+        # 1. Фон
         if self.edit_mode:
-            draw_hud_corners(painter, draw_rect, QColor(0, 255, 136))
+            bg_fill = QColor(self.bg_color)
+            if self.opacity_pct == 0:
+                bg_fill = QColor(0, 255, 136, 25)
+            painter.setBrush(bg_fill)
+            painter.setPen(QPen(QColor(0, 255, 136, 220), 1.5, Qt.DashLine if self.opacity_pct == 0 else Qt.SolidLine))
+            painter.drawRoundedRect(draw_rect, 6, 6)
+            draw_hud_corners(painter, draw_rect, QColor(0, 255, 136), arm=12, width=2.5)
+        else:
+            if self.opacity_pct > 0:
+                painter.setBrush(self.bg_color)
+                painter.setPen(QPen(QColor(255, 255, 255, 30), 1))
+                painter.drawRoundedRect(draw_rect, 6, 6)
 
-        painter.setPen(QColor(240, 246, 252))
-        painter.setFont(QFont("sans-serif", self.font_size, QFont.Normal))
-        text_box = self.rect().adjusted(MARGIN, 6, -MARGIN, -6)
+        # 2. Текст
+        text_padding = MARGIN + 4
+        text_box = self.rect().adjusted(text_padding, 6, -text_padding, -6)
+        painter.setFont(QFont("sans-serif", self.font_size, QFont.Bold if self.opacity_pct == 0 else QFont.Normal))
+
+        # Тень при высокой прозрачности для сохранения читаемости
+        if self.opacity_pct <= 35:
+            painter.setPen(QColor(0, 0, 0, 240))
+            for dx, dy in [(-1, -1), (1, -1), (-1, 1), (1, 1), (0, 2), (0, -1), (2, 0), (-2, 0)]:
+                shadow_box = text_box.adjusted(dx, dy, dx, dy)
+                painter.drawText(shadow_box, Qt.AlignCenter | Qt.TextWordWrap, self.current_text)
+
+        painter.setPen(self.text_color)
         painter.drawText(text_box, Qt.AlignCenter | Qt.TextWordWrap, self.current_text)
