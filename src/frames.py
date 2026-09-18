@@ -2,8 +2,8 @@ import ctypes
 from ctypes import c_void_p, c_ulong, c_int, byref, POINTER
 from PyQt5.QtCore import Qt, QPoint, QRect
 from PyQt5.QtGui import QPainter, QColor, QPen, QFont
-from PyQt5.QtWidgets import QWidget
 from src.config import load_config, save_config
+from PyQt5.QtWidgets import QWidget, QApplication
 
 MARGIN = 12
 
@@ -163,24 +163,67 @@ class ResizableWindow(QWidget):
             return
 
         if event.buttons() & Qt.LeftButton:
+            screen = QApplication.primaryScreen().geometry()
+            SNAP = 20
             delta = event.globalPos() - self.drag_start_pos
+
             if self.resize_edge == 0:
-                self.move(self.drag_start_geo.topLeft() + delta)
+                # 1. ПЕРЕМЕЩЕНИЕ ОКНА (Магнитинг + запрет выезда за экран)
+                w, h = self.width(), self.height()
+                x = self.drag_start_geo.x() + delta.x()
+                y = self.drag_start_geo.y() + delta.y()
+
+                # Прилипание по X
+                if abs(x - screen.left()) <= SNAP:
+                    x = screen.left()
+                elif abs((x + w) - screen.right()) <= SNAP:
+                    x = screen.right() - w + 1
+
+                # Прилипание по Y
+                if abs(y - screen.top()) <= SNAP:
+                    y = screen.top()
+                elif abs((y + h) - screen.bottom()) <= SNAP:
+                    y = screen.bottom() - h + 1
+
+                # Защита от вылета за экран
+                x = max(screen.left(), min(x, screen.right() - w + 1))
+                y = max(screen.top(), min(y, screen.bottom() - h + 1))
+
+                self.move(x, y)
             else:
+                # 2. ИЗМЕНЕНИЕ РАЗМЕРА (Прилипание границ к краям дисплея)
                 rect = QRect(self.drag_start_geo)
-                if self.resize_edge & 1:
+
+                if self.resize_edge & 1:  # Левый край
                     nl = rect.left() + delta.x()
-                    if rect.right() - nl >= self.min_w: rect.setLeft(nl)
-                if self.resize_edge & 2:
+                    if abs(nl - screen.left()) <= SNAP or nl < screen.left():
+                        nl = screen.left()
+                    if rect.right() - nl >= self.min_w:
+                        rect.setLeft(nl)
+
+                if self.resize_edge & 2:  # Правый край
                     nr = rect.right() + delta.x()
-                    if nr - rect.left() >= self.min_w: rect.setRight(nr)
-                if self.resize_edge & 4:
+                    if abs(nr - screen.right()) <= SNAP or nr > screen.right():
+                        nr = screen.right()
+                    if nr - rect.left() >= self.min_w:
+                        rect.setRight(nr)
+
+                if self.resize_edge & 4:  # Верхний край
                     nt = rect.top() + delta.y()
-                    if rect.bottom() - nt >= self.min_h: rect.setTop(nt)
-                if self.resize_edge & 8:
+                    if abs(nt - screen.top()) <= SNAP or nt < screen.top():
+                        nt = screen.top()
+                    if rect.bottom() - nt >= self.min_h:
+                        rect.setTop(nt)
+
+                if self.resize_edge & 8:  # Нижний край
                     nb = rect.bottom() + delta.y()
-                    if nb - rect.top() >= self.min_h: rect.setBottom(nb)
+                    if abs(nb - screen.bottom()) <= SNAP or nb > screen.bottom():
+                        nb = screen.bottom()
+                    if nb - rect.top() >= self.min_h:
+                        rect.setBottom(nb)
+
                 self.setGeometry(rect)
+
             event.accept()
         else:
             self.update_cursor_shape(self.get_edge(event.pos()))
@@ -277,12 +320,23 @@ class TranslationFrame(ResizableWindow):
         text_box = self.rect().adjusted(text_padding, 6, -text_padding, -6)
         painter.setFont(QFont("sans-serif", self.font_size, QFont.Bold if self.opacity_pct == 0 else QFont.Normal))
 
+        # Адаптивное выравнивание: списки и многострочный текст — влево, одиночные реплики — по центру
+        align_flags = (Qt.AlignLeft | Qt.AlignVCenter) if "\n" in self.current_text else Qt.AlignCenter
+        align_flags |= Qt.TextWordWrap
+
         # Тень при высокой прозрачности для сохранения читаемости
         if self.opacity_pct <= 35:
             painter.setPen(QColor(0, 0, 0, 240))
             for dx, dy in [(-1, -1), (1, -1), (-1, 1), (1, 1), (0, 2), (0, -1), (2, 0), (-2, 0)]:
                 shadow_box = text_box.adjusted(dx, dy, dx, dy)
-                painter.drawText(shadow_box, Qt.AlignCenter | Qt.TextWordWrap, self.current_text)
+                painter.drawText(shadow_box, align_flags, self.current_text)
 
         painter.setPen(self.text_color)
-        painter.drawText(text_box, Qt.AlignCenter | Qt.TextWordWrap, self.current_text)
+        painter.drawText(text_box, align_flags, self.current_text)
+
+    def toggle_hidden(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.apply_clickthrough_state()

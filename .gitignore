@@ -4,6 +4,9 @@ env/
 
 __pycache__/
 
+models/
+test_*.py
+
 *.py[cod]
 *$py.class
 
